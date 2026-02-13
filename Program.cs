@@ -52,7 +52,7 @@ class NativeDirSearch
     // closedir: closes the directory stream pointed to by dirp.
 
     // Search yields matching file paths by traversing directories using low-level libc calls.
-    public static IEnumerable<string> Search(string root, string targetName, bool exactMatch = true)
+    public static IEnumerable<string> Search(string root, string targetName, bool exactMatch = true, bool folderOnly = false)
     {
         int filesSearched = 0;
         Stack<string> stack = new Stack<string>();
@@ -105,21 +105,56 @@ class NativeDirSearch
                     // build full path for the entry
                     string path = System.IO.Path.Combine(dir, name);
 
-                    // if the filename matches targetName exactly, yield the path
-                    if (string.Equals(name, targetName, StringComparison.Ordinal))
+                    if (folderOnly)
                     {
-                        Console.WriteLine($"Found match: {path}");
-                        filesSearched++;
-                        yield return path;
+                        // When folderOnly is set, only consider directory entries (skip files).
+                        const byte DT_DIR_LOCAL = 4;
+                        if (entry.d_type == DT_DIR_LOCAL)
+                        {
+                            if (string.Equals(name, targetName, StringComparison.Ordinal))
+                            {
+                                Console.WriteLine($"Found directory match: {path}");
+                                filesSearched++;
+                                yield return path;
+                            }
+                            else if (!exactMatch && name.Contains(targetName))
+                            {
+                                Console.WriteLine($"Found partial directory match: {path}");
+                                filesSearched++;
+                                yield return path;
+                            }
+                            else
+                            {
+                                filesSearched++;
+                            }
+                        }
+                        else
+                        {
+                            // skip non-directory entries when folder-only mode is enabled
+                            filesSearched++;
+                        }
                     }
-                    else if (!exactMatch && name.Contains(targetName))
+                    else
                     {
-                        Console.WriteLine($"Found partial match: {path}");
-                        yield return path;
-                        filesSearched++;
-                    }else{
-                        filesSearched++;
+                        // if the filename matches targetName exactly, yield the path
+                        if (string.Equals(name, targetName, StringComparison.Ordinal))
+                        {
+                            Console.WriteLine($"Found match: {path}");
+                            filesSearched++;
+                            yield return path;
+                        }
+                        else if (!exactMatch && name.Contains(targetName))
+                        {
+                            Console.WriteLine($"Found partial match: {path}");
+                            yield return path;
+                            filesSearched++;
+                        }
+                        else
+                        {
+                            filesSearched++;
+                        }
                     }
+
                     // d_ytpe == 4 (DT_DIR) usually indicates a directory entry on linux
                     const byte DT_DIR = 4;
                     if (entry.d_type == DT_DIR)
@@ -143,11 +178,11 @@ class Program
     static void Main(string[] args)
     {
         string root = args.Length > 0 ? args[0] : "/home/leon/Documents/";
-        string target = args.Length > 1 ? args[1] : "test.txt";
+        string target = args.Length > 1 ? args[1] : "test";
         Console.Error.WriteLine($"Searching for '{target}' starting from '{root}'...");
 
         var results = new System.Collections.Generic.List<string>();
-        foreach (var p in NativeDirSearch.Search(root, target))
+        foreach (var p in NativeDirSearch.Search(root, target, false, true))
             results.Add(p);
 
         if (results.Count == 0)
