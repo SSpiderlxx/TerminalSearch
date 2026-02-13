@@ -56,7 +56,107 @@ class NativeDirSearch
     static extern int close(int fd);
     // close: closes a file descriptor.
 
+    public static IEnumerable<string> ParallelSearch(string root, string targetName, bool exactMatch = true, bool folderOnly = false, bool firstMatchOnly = false, int maxDegreeOfParallelism = 0)
+    {
+        int workers = maxDegreeOfParallelism > 0 ? maxDegreeOfParallelism : Environment.ProcessorCount;
+        var stack = new System.Collections.Concurrent.ConcurrentStack<string>();
+        stack.Push(root);
+        var results = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var cts = new System.Threading.CancellationTokenSource();
+        var token = cts.Token;
+        int foundFlag = 0;
+        string foundPath = null;
 
+        Parallel.ForEach(Enumerable.Range(0, workers), new ParallelOptions { MaxDegreeOfParallelism = workers}, _ =>
+        {
+            while (!token.IsCancellationRequested && stack.TryPop(out var dir))
+            {
+                IntPtr dirp = opendir(dir);
+                if (dirp == IntPtr.Zero)
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    Debug.WriteLine($"opendir failed for {dir}, errno={err}");
+                    continue;
+                }
+
+                try
+                {
+                    while(!token.IsCancellationRequested)
+                    {
+                        IntPtr entryPtr = readdir(dirp);
+                        if (entryPtr == IntPtr.Zero)
+                        {
+                            int err = Marshal.GetLastWin32Error();
+                            if (err != 0)
+                            {
+                                Debug.WriteLine($"readdir error for {dir}, errno: {err}");
+                            }
+                            break;
+                        }
+
+                        dirent entry = Marshal.PtrToStructure<dirent>(entryPtr);
+                        string name = entry.d_name;
+
+                        if (name == "." || name == "..")
+                            continue;
+
+                        string path = System.IO.Path.Combine(dir, name);
+
+                        bool isDir = entry.d_type == 4; // DT_DIR
+                        bool match = string.Equals(name, targetName, StringComparison.Ordinal) ||
+                                     (!exactMatch && name.Contains(targetName));
+
+                        if(folderOnly)
+                        {
+                            if(isDir && match)
+                            {
+                                results.Add(path);
+                                if(firstMatchOnly && System.Threading.Interlocked.CompareExchange(ref foundFlag, 1, 0) == 0)
+                                {
+                                    foundPath = path;
+                                    cts.Cancel();
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            if(match)
+                            {
+                                results.Add(path);
+                                if(firstMatchOnly && System.Threading.Interlocked.CompareExchange(ref foundFlag, 1, 0) == 0)
+                                {
+                                    foundPath = path;
+                                    cts.Cancel();
+                                    break;
+                                }
+                            }
+                        }
+
+                        if(isDir)
+                        {
+                            stack.Push(path);
+                        }
+                    }
+                }
+                finally
+                {
+                    closedir(dirp);
+                }
+            }
+        });
+
+        if (firstMatchOnly)
+        {
+            if (foundPath != null)
+                return new[] { foundPath };
+            
+            return Array.Empty<string>();
+        }
+
+        return results;
+
+    }
 
     // Search yields matching file paths by traversing directories using low-level libc calls.
     public static IEnumerable<string> Search(string root, string targetName, bool exactMatch = true, bool folderOnly = false, bool firstMatchOnly = false)
@@ -151,12 +251,15 @@ class Program
 {
     static void Main(string[] args)
     {
+        // Get thread count for cpu
+        int threadCount = Environment.ProcessorCount;
+
         string root = args.Length > 0 ? args[0] : "/home/leon/";
-        string target = args.Length > 1 ? args[1] : "test.txt";
+        string target = args.Length > 1 ? args[1] : "test";
         Console.Error.WriteLine($"Searching for '{target}' starting from '{root}'...");
 
         var results = new System.Collections.Generic.List<string>();
-        foreach (var p in NativeDirSearch.Search(root, target, true, false, true))
+        foreach (var p in NativeDirSearch.ParallelSearch(root, target, false, false, false, threadCount))
             results.Add(p);
 
         if (results.Count == 0)
