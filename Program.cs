@@ -83,6 +83,7 @@ class NativeDirSearch
             {
                 while (true)
                 {
+                    // Read the next directory entry using readdir
                     IntPtr entryPtr = readdir(dirp);
                     if (entryPtr == IntPtr.Zero)
                     {
@@ -116,19 +117,22 @@ class NativeDirSearch
                     }
                     else
                     {
+                        // Check for match based on name and exactMatch flag
                         if (string.Equals(name, targetName, StringComparison.Ordinal) ||
                             (!exactMatch && name.Contains(targetName)))
                         {
+                            // If firstMatchOnly is true, yield the match and stop searching further
                             if(firstMatchOnly){
                                 yield return path;
                                 yield break; // stop after first match if requested
                             }
-                            
+                            // Print found match to console for debugging
                             Console.WriteLine($"Found match: {path}");
                             yield return path;
                         }
                     }
 
+                    // If the entry is a directory, push it onto the stack to search later
                     const byte DT_DIR = 4;
                     if (entry.d_type == DT_DIR)
                         stack.Push(path);
