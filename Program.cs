@@ -54,7 +54,6 @@ class NativeDirSearch
     // Search yields matching file paths by traversing directories using low-level libc calls.
     public static IEnumerable<string> Search(string root, string targetName, bool exactMatch = true, bool folderOnly = false)
     {
-        int filesSearched = 0;
         Stack<string> stack = new Stack<string>();
         stack.Push(root);
 
@@ -113,25 +112,12 @@ class NativeDirSearch
                         {
                             if (string.Equals(name, targetName, StringComparison.Ordinal))
                             {
-                                Console.WriteLine($"Found directory match: {path}");
-                                filesSearched++;
                                 yield return path;
                             }
                             else if (!exactMatch && name.Contains(targetName))
                             {
-                                Console.WriteLine($"Found partial directory match: {path}");
-                                filesSearched++;
                                 yield return path;
                             }
-                            else
-                            {
-                                filesSearched++;
-                            }
-                        }
-                        else
-                        {
-                            // skip non-directory entries when folder-only mode is enabled
-                            filesSearched++;
                         }
                     }
                     else
@@ -139,20 +125,13 @@ class NativeDirSearch
                         // if the filename matches targetName exactly, yield the path
                         if (string.Equals(name, targetName, StringComparison.Ordinal))
                         {
-                            Console.WriteLine($"Found match: {path}");
-                            filesSearched++;
                             yield return path;
                         }
                         else if (!exactMatch && name.Contains(targetName))
                         {
-                            Console.WriteLine($"Found partial match: {path}");
                             yield return path;
-                            filesSearched++;
                         }
-                        else
-                        {
-                            filesSearched++;
-                        }
+                        
                     }
 
                     // d_ytpe == 4 (DT_DIR) usually indicates a directory entry on linux
@@ -166,7 +145,6 @@ class NativeDirSearch
             finally
             {
                 closedir(dirp); // ensure the directory stream is closed to free resources
-                Debug.WriteLine($"Closed directory: {dir}, total files searched so far: {filesSearched}");
             }
         }
 
