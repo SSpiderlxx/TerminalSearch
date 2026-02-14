@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
@@ -56,7 +57,7 @@ class NativeDirSearch
     static extern int close(int fd);
     // close: closes a file descriptor.
 
-    public static IEnumerable<string> ParallelSearch(string root, string targetName, bool exactMatch = true, bool folderOnly = false, bool firstMatchOnly = false, int maxDegreeOfParallelism = 0)
+    public static IEnumerable<string> ParallelSearch(string root, string targetName, bool exactMatch = true, bool folderOnly = false, bool firstMatchOnly = false, bool applicationOnly = false, int maxDegreeOfParallelism = 0)
     {
         int workers = maxDegreeOfParallelism > 0 ? maxDegreeOfParallelism : Environment.ProcessorCount;
         var stack = new System.Collections.Concurrent.ConcurrentStack<string>();
@@ -109,6 +110,24 @@ class NativeDirSearch
                         if(folderOnly)
                         {
                             if(isDir && match)
+                            {
+                                results.Add(path);
+                                if(firstMatchOnly && System.Threading.Interlocked.CompareExchange(ref foundFlag, 1, 0) == 0)
+                                {
+                                    foundPath = path;
+                                    cts.Cancel();
+                                    break;
+                                }
+                            }
+                        }
+                        else if(applicationOnly)
+                        {
+                            // For simplicity, consider files with .exe, .app, .sh extensions as applications
+                            bool isApp = !isDir && (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+                                                     name.EndsWith(".app", StringComparison.OrdinalIgnoreCase) ||
+                                                     name.EndsWith(".sh", StringComparison.OrdinalIgnoreCase) ||
+                                                     name.EndsWith(".desktop", StringComparison.OrdinalIgnoreCase));
+                            if(isApp && match)
                             {
                                 results.Add(path);
                                 if(firstMatchOnly && System.Threading.Interlocked.CompareExchange(ref foundFlag, 1, 0) == 0)
@@ -259,6 +278,7 @@ class Program
         bool folderOnly = false;
         bool firstMatchOnly = false;
         bool exactMatch = false;
+        bool appsOnly = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -305,6 +325,10 @@ class Program
                     return;
                 }
             }
+            else if (a == "-a" || a == "--app")
+            {
+                appsOnly = true;
+            }
             else
             {
                 // positional arguments: first becomes root (if not set), next becomes target
@@ -334,7 +358,7 @@ class Program
         Console.Error.WriteLine($"Searching for '{target}' starting from '{root}'...");
 
         var results = new System.Collections.Generic.List<string>();
-        foreach (var p in NativeDirSearch.ParallelSearch(root, target, exactMatch, folderOnly, firstMatchOnly, threadCount))
+        foreach (var p in NativeDirSearch.ParallelSearch(root, target, exactMatch, folderOnly, firstMatchOnly, appsOnly, threadCount))
             results.Add(p);
 
         if (results.Count == 0)
