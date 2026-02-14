@@ -251,15 +251,90 @@ class Program
 {
     static void Main(string[] args)
     {
+
         // Get thread count for cpu
         int threadCount = Environment.ProcessorCount;
+        string root = null;
+        string target = null;
+        bool folderOnly = false;
+        bool firstMatchOnly = false;
+        bool exactMatch = false;
 
-        string root = args.Length > 0 ? args[0] : "/home/leon/";
-        string target = args.Length > 1 ? args[1] : "test";
+        for (int i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a == "-e" || a == "--exact")
+            {
+                exactMatch = true;
+            }
+            else if (a == "-d" || a == "--directory")
+            {
+                folderOnly = true;
+            }
+            else if (a == "-f" || a == "--first")
+            {
+                firstMatchOnly = true;
+            }
+            else if (a == "-t" || a == "--threads")
+            {
+                if (i + 1 < args.Length && int.TryParse(args[++i], out int t))
+                    threadCount = t;
+                else
+                {
+                    Console.Error.WriteLine("Invalid thread count specified after -t/--threads");
+                    return;
+                }
+            }
+            else if (a == "-r" || a == "--root")
+            {
+                if (i + 1 < args.Length)
+                    root = args[++i];
+                else
+                {
+                    Console.Error.WriteLine("No root specified after -r/--root");
+                    return;
+                }
+            }
+            else if (a == "-n" || a == "--name")
+            {
+                if (i + 1 < args.Length)
+                    target = args[++i];
+                else
+                {
+                    Console.Error.WriteLine("No target name specified after -n/--name");
+                    return;
+                }
+            }
+            else
+            {
+                // positional arguments: first becomes root (if not set), next becomes target
+                if (root == null)
+                    root = a;
+                else if (target == null)
+                    target = a;
+                else
+                {
+                    Console.Error.WriteLine($"Unexpected argument: {a}");
+                    return;
+                }
+            }
+        }
+
+        if (root == null)
+            root = "/home/";
+
+        if (target == null)
+        {
+            Console.Error.WriteLine("No target specified. Use -n <name> or provide a target as a positional argument.");
+            return;
+        }
+        
+        // debug: print parsed values before search
+        //Console.WriteLine($"DEBUG CONFIG: root='{root}', target='{target}', threadCount={threadCount}, fileOnly={fileOnly}, folderOnly={folderOnly}, firstMatchOnly={firstMatcghOnly}");
         Console.Error.WriteLine($"Searching for '{target}' starting from '{root}'...");
 
         var results = new System.Collections.Generic.List<string>();
-        foreach (var p in NativeDirSearch.ParallelSearch(root, target, false, false, false, threadCount))
+        foreach (var p in NativeDirSearch.ParallelSearch(root, target, exactMatch, folderOnly, firstMatchOnly, threadCount))
             results.Add(p);
 
         if (results.Count == 0)
