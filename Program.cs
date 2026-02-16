@@ -2,11 +2,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography.X509Certificates;
-using System.Text;
+using System.Threading.Tasks;
+using Spectre.Console;
+using Spectre.Console.Rendering;
 
 class NativeDirSearch
 {
@@ -268,109 +268,96 @@ class NativeDirSearch
 
 class Program
 {
-    static void Main(string[] args)
+    static async Task Main(string[] args)
     {
+        string root = "/home/";
+        var results = new List<string>();
+        string query = "";
+        CancellationTokenSource searchCts = null;
 
-        // Get thread count for cpu
-        int threadCount = Environment.ProcessorCount;
-        string root = null;
-        string target = null;
-        bool folderOnly = false;
-        bool firstMatchOnly = false;
-        bool exactMatch = false;
-        bool appsOnly = false;
-
-        for (int i = 0; i < args.Length; i++)
+        // Helper to build the one-column tbale with two rows
+        Func<string, IEnumerable<string>, IRenderable> build = (q, r) =>
         {
-            var a = args[i];
-            if (a == "-e" || a == "--exact")
-            {
-                exactMatch = true;
-            }
-            else if (a == "-d" || a == "--directory")
-            {
-                folderOnly = true;
-            }
-            else if (a == "-f" || a == "--first")
-            {
-                firstMatchOnly = true;
-            }
-            else if (a == "-t" || a == "--threads")
-            {
-                if (i + 1 < args.Length && int.TryParse(args[++i], out int t))
-                    threadCount = t;
-                else
-                {
-                    Console.Error.WriteLine("Invalid thread count specified after -t/--threads");
-                    return;
-                }
-            }
-            else if (a == "-r" || a == "--root")
-            {
-                if (i + 1 < args.Length)
-                    root = args[++i];
-                else
-                {
-                    Console.Error.WriteLine("No root specified after -r/--root");
-                    return;
-                }
-            }
-            else if (a == "-n" || a == "--name")
-            {
-                if (i + 1 < args.Length)
-                    target = args[++i];
-                else
-                {
-                    Console.Error.WriteLine("No target name specified after -n/--name");
-                    return;
-                }
-            }
-            else if (a == "-a" || a == "--app")
-            {
-                appsOnly = true;
-            }
-            else
-            {
-                // positional arguments: first becomes root (if not set), next becomes target
-                if (root == null)
-                    root = a;
-                else if (target == null)
-                    target = a;
-                else
-                {
-                    Console.Error.WriteLine($"Unexpected argument: {a}");
-                    return;
-                }
-            }
-        }
+            var t = new Table().AddColumn("");
+            t.HideHeaders();
+            t.AddRow(new Markup($"[yellow]Search:[/] {Markup.Escape(q)}"));
+            var resultsText = r.Any()
+                ? string.Join("\n", r.Select(Markup.Escape))
+                : "[grey][i]No results[/][/]";
+            // add a second row that contains the results (Panel preserves newlines)
+            t.AddRow(new Panel(resultsText) { Padding = new Padding(0, 0, 0, 0), Border = BoxBorder.Rounded });
+            return t;
+        };
 
-        if (root == null)
-            root = "/home/";
+        await AnsiConsole.Live(build(query, results))
+            .StartAsync(async ctx =>
+            {
+                ctx.Refresh();
 
-        if (target == null)
-        {
-            Console.Error.WriteLine("No target specified. Use -n <name> or provide a target as a positional argument.");
-            return;
-        }
-        
-        // debug: print parsed values before search
-        //Console.WriteLine($"DEBUG CONFIG: root='{root}', target='{target}', threadCount={threadCount}, fileOnly={fileOnly}, folderOnly={folderOnly}, firstMatchOnly={firstMatcghOnly}");
-        Console.Error.WriteLine($"Searching for '{target}' starting from '{root}'...");
+                while (true)
+                {
+                    var key = Console.ReadKey(intercept: true);
 
-        var results = new System.Collections.Generic.List<string>();
-        foreach (var p in NativeDirSearch.ParallelSearch(root, target, exactMatch, folderOnly, firstMatchOnly, appsOnly, threadCount))
-            results.Add(p);
+                    if (key.Key == ConsoleKey.Escape)
+                    {
+                        break;
+                    }
 
-        if (results.Count == 0)
-        {
-            Console.WriteLine("No matches found");
-        }
-        else
-        {
-            foreach (var p in results) Console.WriteLine(p);
-            Console.WriteLine($"Found {results.Count} matches");
-            //print time taken for search
-             Console.WriteLine($"Search completed in {DateTime.Now - Process.GetCurrentProcess().StartTime}");
-        }
+                    if (key.Key == ConsoleKey.Backspace)
+                    {
+                        if (query.Length > 0)
+                        {
+                            query = query.Substring(0, query.Length - 1);
+                        }
+                    }
+                    else if (key.Key == ConsoleKey.Enter)
+                    {
+                        // Do nothing on Enter for now
+                    }
+                    else if (!char.IsControl(key.KeyChar))
+                    {
+                        query += key.KeyChar;
+                    }
+
+                    // Cancel any ongoing search
+                    searchCts?.Cancel();
+                    searchCts = new CancellationTokenSource();
+                    var token = searchCts.Token;
+
+                    // Start a new search task
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(120, token).ContinueWith(_ => { }, TaskScheduler.Default); // debounce delay
+                        if (token.IsCancellationRequested)
+                        {
+                            return;
+                        }
+                        var found = new List<string>();
+                        if (!string.IsNullOrEmpty(query))
+                        {
+                            try
+                            {
+                                // Use your parallel native search implementation instead of Directory.EnumerateFiles
+                                found = NativeDirSearch
+                                    .ParallelSearch(root, query, exactMatch: false, folderOnly: false, firstMatchOnly: false, applicationOnly: false, maxDegreeOfParallelism: Environment.ProcessorCount)
+                                    .Take(20)
+                                    .ToList();
+                            }
+                            catch (Exception) { }
+                        }
+
+                        if (!token.IsCancellationRequested)
+                        {
+                            results = found;
+                            ctx.UpdateTarget(build(query, results));
+                            ctx.Refresh();
+                        }
+
+                    }, token);
+                    
+                    ctx.UpdateTarget(build(query, results));
+                    ctx.Refresh();
+                }
+            });
     }
 }
