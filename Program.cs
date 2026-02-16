@@ -66,7 +66,7 @@ class NativeDirSearch
         var cts = new System.Threading.CancellationTokenSource();
         var token = cts.Token;
         int foundFlag = 0;
-        string foundPath = null;
+        string foundPath = "";
 
         Parallel.ForEach(Enumerable.Range(0, workers), new ParallelOptions { MaxDegreeOfParallelism = workers}, _ =>
         {
@@ -270,94 +270,303 @@ class Program
 {
     static async Task Main(string[] args)
     {
+
+        //Cear Screen before starting
+        Console.Clear();
+
         string root = "/home/";
         var results = new List<string>();
         string query = "";
         CancellationTokenSource searchCts = null;
+        int selectedIndex = -1;
+        string chosenPath = "";
+
+        List<string> options = new List<string>
+        {
+            "Search for files and folders",
+            "Search for folders only",
+            "Search for applications only",
+            "First match only"
+        };
+
+        // option flags (updated from options prompt)
+        bool folderOnly = false;
+        bool applicationOnly = false;
+        bool firstMatchOnly = false;
 
         // Helper to build the one-column tbale with two rows
-        Func<string, IEnumerable<string>, IRenderable> build = (q, r) =>
+        Func<string, IEnumerable<string>, int, IRenderable> build = (q, r, sel) =>
         {
+            const int visible = 20;
             var t = new Table().AddColumn("");
+            t.Centered();
+            t.Width(80);
+            t.RoundedBorder();
             t.HideHeaders();
             t.AddRow(new Markup($"[yellow]Search:[/] {Markup.Escape(q)}"));
-            var resultsText = r.Any()
-                ? string.Join("\n", r.Select(Markup.Escape))
-                : "[grey][i]No results[/][/]";
+
+            var resultsTable = new Table().AddColumn("");
+            resultsTable.HideHeaders();
+            resultsTable.NoBorder();
+            var list = r.ToList();
+            int total = list.Count;
+
+            // compute window start so selection stays roughly centered
+            int start = 0;
+            if (sel >= 0)
+            {
+                int half = visible / 2;
+                int desired = sel - half;
+                int maxStart = Math.Max(0, total - visible);
+                start = Math.Max(0, Math.Min(desired, maxStart));
+            }
+            else
+            {
+                start = 0;
+            }
+
+            int end = Math.Min(total, start + visible);
+
+            if (total == 0)
+            {
+                resultsTable.AddRow(new Markup("[grey][i]No results found[/][/]"));
+            }
+            else
+            {
+                for (int i = start; i < end; i++)
+                {
+                    var text = Markup.Escape(list[i]);
+                    if (i == sel)
+                    {
+                        resultsTable.AddRow(new Markup($"[black on white]{text}[/]"));
+                    }
+                    else
+                    {
+                        resultsTable.AddRow(new Markup(text));
+                    }
+                }
+            }
+
+            // indicate more results above/below
+            if (start > 0)
+                resultsTable.InsertRow(0, new Markup("[grey][i]... more above[/][/]"));
+            if (total > end)
+                resultsTable.AddRow(new Markup($"[grey][i]... and {total - end} more[/][/]"));
+
             // add a second row that contains the results (Panel preserves newlines)
-            t.AddRow(new Panel(resultsText) { Padding = new Padding(0, 0, 0, 0), Border = BoxBorder.Rounded });
+            t.AddRow(new Panel(resultsTable) { Padding = new Padding(0, 1, 0, 0), Border = BoxBorder.None });
+            t.ShowFooters();
+            t.Columns[0].Footer(new Markup($"[grey][i]{total} result(s) found[/][/]"));
+
             return t;
         };
 
-        await AnsiConsole.Live(build(query, results))
-            .StartAsync(async ctx =>
-            {
-                ctx.Refresh();
+        // run Live sessions; if user presses Ctrl+O we break out, show the options prompt,
+        // update flags, then restart the Live UI so the search resumes with new options.
+        bool keepRunning = true;
+        while (keepRunning)
+        {
+            bool showOptionsRequested = false;
 
-                while (true)
+            await AnsiConsole.Live(build(query, results, selectedIndex))
+                .StartAsync(async ctx =>
                 {
-                    var key = Console.ReadKey(intercept: true);
-
-                    if (key.Key == ConsoleKey.Escape)
-                    {
-                        break;
-                    }
-
-                    if (key.Key == ConsoleKey.Backspace)
-                    {
-                        if (query.Length > 0)
-                        {
-                            query = query.Substring(0, query.Length - 1);
-                        }
-                    }
-                    else if (key.Key == ConsoleKey.Enter)
-                    {
-                        // Do nothing on Enter for now
-                    }
-                    else if (!char.IsControl(key.KeyChar))
-                    {
-                        query += key.KeyChar;
-                    }
-
-                    // Cancel any ongoing search
-                    searchCts?.Cancel();
-                    searchCts = new CancellationTokenSource();
-                    var token = searchCts.Token;
-
-                    // Start a new search task
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(120, token).ContinueWith(_ => { }, TaskScheduler.Default); // debounce delay
-                        if (token.IsCancellationRequested)
-                        {
-                            return;
-                        }
-                        var found = new List<string>();
-                        if (!string.IsNullOrEmpty(query))
-                        {
-                            try
-                            {
-                                // Use your parallel native search implementation instead of Directory.EnumerateFiles
-                                found = NativeDirSearch
-                                    .ParallelSearch(root, query, exactMatch: false, folderOnly: false, firstMatchOnly: false, applicationOnly: false, maxDegreeOfParallelism: Environment.ProcessorCount)
-                                    .Take(20)
-                                    .ToList();
-                            }
-                            catch (Exception) { }
-                        }
-
-                        if (!token.IsCancellationRequested)
-                        {
-                            results = found;
-                            ctx.UpdateTarget(build(query, results));
-                            ctx.Refresh();
-                        }
-
-                    }, token);
-                    
-                    ctx.UpdateTarget(build(query, results));
                     ctx.Refresh();
+
+                    while (true)
+                    {
+                        var key = Console.ReadKey(intercept: true);
+
+                        // Ctrl+O: request options and break live loop
+                        if (key.Key == ConsoleKey.O && (key.Modifiers & ConsoleModifiers.Control) != 0)
+                        {
+                            showOptionsRequested = true;
+                            break;
+                        }
+
+                        if (key.Key == ConsoleKey.Escape)
+                        {
+                            keepRunning = false;
+                            break;
+                        }
+
+                        // navigation keys
+                        if (key.Key == ConsoleKey.UpArrow)
+                        {
+                            if (results.Count > 0)
+                            {
+                                selectedIndex = Math.Max(0, selectedIndex <= 0 ? 0 : selectedIndex - 1);
+                                ctx.UpdateTarget(build(query, results, selectedIndex));
+                                ctx.Refresh();
+                            }
+                            continue;
+                        }
+                        if (key.Key == ConsoleKey.DownArrow)
+                        {
+                            if (results.Count > 0)
+                            {
+                                selectedIndex = Math.Min(results.Count - 1, selectedIndex < 0 ? 0 : selectedIndex + 1);
+                                ctx.UpdateTarget(build(query, results, selectedIndex));
+                                ctx.Refresh();
+                            }
+                            continue;
+                        }
+
+                        if (key.Key == ConsoleKey.Backspace)
+                        {
+                            if (query.Length > 0)
+                            {
+                                query = query.Substring(0, query.Length - 1);
+                                selectedIndex = -1;
+                            }
+                        }
+                        else if (key.Key == ConsoleKey.Enter)
+                        {
+                            if (selectedIndex >= 0 && selectedIndex < results.Count)
+                            {
+                                chosenPath = results[selectedIndex];
+                                keepRunning = false;
+                                break;
+                            }
+                        }
+                        else if (!char.IsControl(key.KeyChar))
+                        {
+                            query += key.KeyChar;
+                            selectedIndex = -1;
+                        }
+
+                        // Cancel any ongoing search
+                        searchCts?.Cancel();
+                        searchCts = new CancellationTokenSource();
+                        var token = searchCts.Token;
+
+                        // Start a new search task (debounced)
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(120, token).ContinueWith(_ => { }, TaskScheduler.Default);
+                            if (token.IsCancellationRequested) return;
+
+                            var found = new List<string>();
+                            if (!string.IsNullOrEmpty(query))
+                            {
+                                try
+                                {
+                                    found = NativeDirSearch
+                                        .ParallelSearch(root, query, exactMatch: false,
+                                            folderOnly: folderOnly,
+                                            firstMatchOnly: firstMatchOnly,
+                                            applicationOnly: applicationOnly,
+                                            maxDegreeOfParallelism: Environment.ProcessorCount)
+                                        .ToList();
+                                }
+                                catch (Exception) { }
+                            }
+
+                            if (!token.IsCancellationRequested)
+                            {
+                                results = found;
+                                if (results.Count == 0) selectedIndex = -1;
+                                else if (selectedIndex < 0) selectedIndex = 0;
+                                else selectedIndex = Math.Min(selectedIndex, results.Count - 1);
+                                ctx.UpdateTarget(build(query, results, selectedIndex));
+                                ctx.Refresh();
+                            }
+                        }, token);
+
+                        ctx.UpdateTarget(build(query, results, selectedIndex));
+                        ctx.Refresh();
+                    }
+                });
+
+            // If options were requested, show blocking SelectionPrompt outside Live, then restart loop
+            if (showOptionsRequested && keepRunning)
+            {
+                Console.Clear();
+
+                int optIndex = 0;
+                Func<int, IRenderable> buildOptions = sel =>
+                {
+                    var outer = new Table().AddColumn("").HideHeaders();
+                    outer.Width(60);
+                    outer.Centered();
+                    outer.RoundedBorder();
+                    outer.AddRow(new Markup("[yellow]Options[/]"));
+
+                    var list = new Table().AddColumn("").HideHeaders().NoBorder();
+                    for (int i = 0; i < options.Count; i++)
+                    {
+                        var raw = options[i] ?? "";
+                        var escaped = Markup.Escape(raw);
+                        list.AddRow(i == sel ? new Markup($"[black on white]{escaped}[/]") : new Markup(escaped));
+                    }
+
+                    outer.AddRow(new Panel(list) { Padding = new Padding(1), Border = BoxBorder.None });
+                    outer.AddRow(new Markup("[grey italic]Use ↑ ↓ and Enter to select, Esc to cancel[/]"));
+                    return outer;
+                };
+
+                string choice = "";
+                await AnsiConsole.Live(buildOptions(optIndex))
+                    .StartAsync(async ctx =>
+                    {
+                        ctx.Refresh();
+                        while (true)
+                        {
+                            var key = Console.ReadKey(intercept: true);
+                            if (key.Key == ConsoleKey.UpArrow)
+                            {
+                                optIndex = Math.Max(0, optIndex - 1);
+                                ctx.UpdateTarget(buildOptions(optIndex));
+                                ctx.Refresh();
+                                continue;
+                            }
+                            if (key.Key == ConsoleKey.DownArrow)
+                            {
+                                optIndex = Math.Min(options.Count - 1, optIndex + 1);
+                                ctx.UpdateTarget(buildOptions(optIndex));
+                                ctx.Refresh();
+                                continue;
+                            }
+                            if (key.Key == ConsoleKey.Enter)
+                            {
+                                choice = options[optIndex];
+                                break;
+                            }
+                            if (key.Key == ConsoleKey.Escape)
+                            {
+                                choice = "";
+                                break;
+                            }
+                        }
+                    });
+
+                if (choice != null)
+                {
+                    folderOnly = choice == "Search for folders only";
+                    applicationOnly = choice == "Search for applications only";
+                    firstMatchOnly = choice == "First match only";
                 }
-            });
+
+                // reset search state and continue to restart Live with new flags
+                results.Clear();
+                selectedIndex = -1;
+                Console.Clear();
+                // loop continues to restart Live
+            }
+            else
+            {
+                // either user exited or selected a path; stop looping
+                break;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(chosenPath))
+        {
+            Console.WriteLine(chosenPath);
+        }
+
+        //CLear Screen
+        Console.Clear();
+
     }
 }
