@@ -280,6 +280,10 @@ class Program
         CancellationTokenSource searchCts = null;
         int selectedIndex = -1;
         string chosenPath = "";
+        bool isSearching = false;
+        int spinnerFrame = 0;
+        string[] spinner = new[] { "|", "/", "-", "\\"};
+        Task spinnerTask = null;
 
         List<string> options = new List<string>
         {
@@ -287,6 +291,13 @@ class Program
             "Search for folders only",
             "Search for applications only",
             "First match only"
+        };
+
+        List<string> fileOptions = new List<string>
+        {
+            "Open file",
+            "Copy path to clipboard",
+            "Cancel"
         };
 
         // option flags (updated from options prompt)
@@ -356,7 +367,10 @@ class Program
             // add a second row that contains the results (Panel preserves newlines)
             t.AddRow(new Panel(resultsTable) { Padding = new Padding(0, 1, 0, 0), Border = BoxBorder.None });
             t.ShowFooters();
-            t.Columns[0].Footer(new Markup($"[grey][i]{total} result(s) found - Press Ctrl+O for options, Esc to exit[/][/]"));
+
+            var modeText = folderOnly ? "Folders Only" : applicationOnly ? "Applications Only" : firstMatchOnly ? "First Match Only" : "All Results";
+            var spinnerText = isSearching ? $" {spinner[spinnerFrame++ % spinner.Length]} Searching..." : "";
+            t.Columns[0].Footer(new Markup($"[grey][i] MODE: {modeText}{spinnerText} - Press Ctrl+O for options, Esc to exit[/][/]"));
 
             return t;
         };
@@ -367,6 +381,7 @@ class Program
         while (keepRunning)
         {
             bool showOptionsRequested = false;
+            bool showFileOptionsRequested = false;
 
             await AnsiConsole.Live(build(query, results, selectedIndex))
                 .StartAsync(async ctx =>
@@ -424,8 +439,7 @@ class Program
                         {
                             if (selectedIndex >= 0 && selectedIndex < results.Count)
                             {
-                                chosenPath = results[selectedIndex];
-                                keepRunning = false;
+                                showFileOptionsRequested = true;
                                 break;
                             }
                         }
@@ -439,6 +453,21 @@ class Program
                         searchCts?.Cancel();
                         searchCts = new CancellationTokenSource();
                         var token = searchCts.Token;
+
+                        isSearching = true;
+                        if (spinnerTask == null || spinnerTask.IsCompleted)
+                        {
+                            spinnerTask = Task.Run(async () =>
+                            {
+                                while (isSearching)
+                                {
+                                    spinnerFrame++;
+                                    ctx.UpdateTarget(build(query, results, selectedIndex));
+                                    ctx.Refresh();
+                                    await Task.Delay(120); // adjust for smoothness (50-120ms)
+                                }
+                            });
+                        }
 
                         // Start a new search task (debounced)
                         _ = Task.Run(async () =>
@@ -471,12 +500,117 @@ class Program
                                 ctx.UpdateTarget(build(query, results, selectedIndex));
                                 ctx.Refresh();
                             }
+                            isSearching = false;
                         }, token);
 
                         ctx.UpdateTarget(build(query, results, selectedIndex));
                         ctx.Refresh();
                     }
                 });
+
+            if (showFileOptionsRequested)
+            {
+                //Console.Clear();
+                chosenPath = results[selectedIndex];
+
+                int optIndex = 0;
+                Func<int, IRenderable> buildFileOptions = sel =>
+                {
+                    var outer = new Table().AddColumn("").HideHeaders();
+                    outer.Width(60);
+                    outer.Centered();
+                    outer.RoundedBorder();
+                    outer.AddRow(new Markup($"[yellow]Selected:[/] {Markup.Escape(chosenPath)}"));
+                    var list = new Table().AddColumn("").HideHeaders().NoBorder();
+                    var fileOptions = new List<string> { "Open file", "Copy path to clipboard", "Cancel" };
+                    for (int i = 0; i < fileOptions.Count; i++)
+                    {
+                        var raw = fileOptions[i];
+                        var escaped = Markup.Escape(raw);
+                        list.AddRow(i == sel ? new Markup($"[black on white]{escaped}[/]") : new Markup(escaped));
+                    }
+                    outer.AddRow(new Panel(list) { Padding = new Padding(1), Border = BoxBorder.None });
+                    outer.AddRow(new Markup("[grey italic]Use ↑ ↓ and Enter to select, Esc to cancel[/]"));
+                    return outer;
+                };
+
+                string fileChoice = "";
+                await AnsiConsole.Live(buildFileOptions(optIndex))
+                    .StartAsync(async ctx =>
+                    {
+                        ctx.Refresh();
+                        while (true)                        {
+                            var key = Console.ReadKey(intercept: true);
+                            if (key.Key == ConsoleKey.UpArrow)
+                            {
+                                optIndex = Math.Max(0, optIndex - 1);
+                                ctx.UpdateTarget(buildFileOptions(optIndex));
+                                ctx.Refresh();
+                                continue;
+                            }
+                            if (key.Key == ConsoleKey.DownArrow)
+                            {
+                                optIndex = Math.Min(2, optIndex + 1);
+                                ctx.UpdateTarget(buildFileOptions(optIndex));
+                                ctx.Refresh();
+                                continue;
+                            }
+                            if (key.Key == ConsoleKey.Enter)
+                            {
+                                fileChoice = fileOptions[optIndex];
+                                break;
+                            }
+                            if (key.Key == ConsoleKey.Escape)
+                            { 
+                                fileChoice = "Cancel";
+                                break;
+                            }
+                        }
+                    });
+
+                if (fileChoice == "Open file/folder")
+                {
+                    //open with vscode
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = chosenPath,
+                            UseShellExecute = true
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to open file: {ex.Message}");
+                    }
+                }
+
+                if (fileChoice == "Copy path to clipboard")
+                {
+                    // try
+                    // {
+                    //     TextCopy.ClipboardService.SetText(chosenPath);
+                    // }
+                    // catch (Exception ex)
+                    // {
+                    //     Console.WriteLine($"Failed to copy to clipboard: {ex.Message}");
+                    // }
+                    showFileOptionsRequested = false;
+                    Console.Clear();
+                    continue;
+                }
+
+                if (fileChoice == "Cancel")
+                {
+                    // do nothing, just return to search
+                    showFileOptionsRequested = false;
+                    Console.Clear();
+                    continue;
+                }
+                
+            }
+
+
 
             // If options were requested, show blocking SelectionPrompt outside Live, then restart loop
             if (showOptionsRequested && keepRunning)
