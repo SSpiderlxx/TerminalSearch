@@ -356,7 +356,7 @@ class Program
             // add a second row that contains the results (Panel preserves newlines)
             t.AddRow(new Panel(resultsTable) { Padding = new Padding(0, 1, 0, 0), Border = BoxBorder.None });
             t.ShowFooters();
-            t.Columns[0].Footer(new Markup($"[grey][i]{total} result(s) found[/][/]"));
+            t.Columns[0].Footer(new Markup($"[grey][i]{total} result(s) found - Press Ctrl+O for options, Esc to exit[/][/]"));
 
             return t;
         };
